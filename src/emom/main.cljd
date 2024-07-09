@@ -1,0 +1,222 @@
+(ns emom.main
+  (:require
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter/painting.dart" :as p]
+   ["dart:developer" :as developer]
+   [cljd.flutter :as f]))
+
+;;; State Components ---------------------------------------------
+
+;; App it small enough to put all state in one global place
+(defonce app-state
+  (atom
+   {;; :total-time 60        ; I want to remove this
+    :major-interval 2     ; in minutes
+    :minor-interval 30    ; in seconds
+    :interval-counts 10}))   ; number of iterations
+
+(def emom-interval-major
+  (into
+   (sorted-map)
+   {:emom-1 {:label "1M" :unit 1}
+    :emom-2 {:label "2M" :unit 2}
+    :emom-3 {:label "3M" :unit 3}
+    :emom-4 {:label "5M" :unit 5}}))
+
+(def emom-interval-minor
+  (into
+   (sorted-map)
+   {:emom-rest-0 {:label "0S" :unit 0}
+    :emom-rest-1 {:label "10S" :unit 10}
+    :emom-rest-2 {:label "20S" :unit 20}
+    :emom-rest-4 {:label "30S" :unit 30}}))
+
+;;; Pure Functions ---------------------------------------------
+
+(def ^m/TextStyle text-style (m/TextStyle .fontWeight m/FontWeight.w700 .fontSize 32))
+(def ^m/TextStyle small-text-style (m/TextStyle .fontWeight m/FontWeight.w400 .fontSize 12))
+(defn- toggle-stopwatch [^Stopwatch s]
+  (if (.-isRunning s) (.stop s) (.start s)))
+
+(defn colDivider [] (w/SizedBox .height 10))
+
+;;; Widgets ---------------------------------------------
+
+(defn interval-selection 
+  "Choose your EMOM Workout"
+  [choices update-key default-key] 
+  (f/widget
+   :watch [selected (atom #{default-key}) :as selected-at]
+   (m/SegmentedButton
+    .segments (map (fn [[v {:keys [label unit]}]] (m/ButtonSegment .value v .label (m/Text label))) choices)
+    .selected selected
+    .onSelectionChanged #(let [unit-val  (get-in choices [(first %) :unit])]
+                           (developer/log  (.toString %) .name "Local State")
+                           (developer/log  (.toString  @app-state) .name "AppState")
+                           (reset! selected-at %) ; local reset
+                           (swap! app-state assoc update-key unit-val)) ; global reset
+
+    .emptySelectionAllowed false
+    .multiSelectionEnabled false)))
+
+(defn slider-counts []
+  (f/widget
+   :watch [as app-state]
+   :let [_ (dart:core/print "Rebuild")]
+   :watch [pos (atom 10) :as position]
+   (m/Slider
+    .value pos
+    .label (.toString pos)
+    .onChanged (fn [m] (reset! position m) nil)
+    .onChangeEnd (fn [m] (swap! app-state assoc :interval-counts m) nil)
+    .min 0.0
+    .max 30
+    .divisions 30)))
+
+(defn timer-widgets
+  "This is the widget that creates the timer to display progress"
+   []
+  (let [_ (dart:core/print "Rebuild")
+        s1 (-> (Stream/periodic (Duration .milliseconds 100) identity) .asBroadcastStream)
+
+        total-time-stopwatch  (Stopwatch.)
+        major-time-stopwatch  (Stopwatch.)
+        minor-time-stopwatch  (Stopwatch.)
+        remaining-intervals (atom (:interval-counts @app-state))]
+    (f/widget
+        ; I use the Stream periodic to force an update each second but
+        ; I use the stopwatches for the time logic
+     :watch [_ s1
+             state app-state]
+     :let [total-time-ms (* (:interval-counts state) (:major-interval state) 60000)  ; minutes -> ms
+           total-time-seconds (* (:interval-counts state) (:major-interval state) 60)
+           
+           total-time (or (.-inSeconds (.-elapsed total-time-stopwatch)) 0)
+           major-time (or (.-inSeconds (.-elapsed major-time-stopwatch)) 0)
+           minor-time (or (.-inSeconds (.-elapsed minor-time-stopwatch)) 0)
+
+           total-time-elapsed-ms (or (.-elapsedMilliseconds total-time-stopwatch) 0)
+           major-time-elapsed-ms (or (.-elapsedMilliseconds major-time-stopwatch) 0)
+           minor-time-elapsed-ms (or (.-elapsedMilliseconds minor-time-stopwatch) 0)
+
+        ;; calculate stopwatch updates in seconds but refresh updates in milliseconds\
+           total-time-ratio (/ total-time-elapsed-ms total-time-ms)
+           major-time-ratio (/ major-time-elapsed-ms (* 60000 (:major-interval @app-state))) ; minutes -> ms
+           minor-time-ratio (/ minor-time-elapsed-ms (* 1000 (:minor-interval @app-state)))  ; s --> ms
+           
+           time-remaining (- total-time-seconds total-time)
+
+           - (dart:core/print (.toString total-time))
+        ;; put all my logic here. Flutter requires non-boid/non-null retunr
+        ;; stop minor
+           _ (when (= minor-time (* 1000 (:minor-interval @app-state)))
+               (.stop minor-time-stopwatch)
+               (.reset minor-time-stopwatch)
+               true)
+
+         ;; stop major
+           _ (when (= major-time (* 60000 (:major-interval @app-state)))
+               (.reset major-time-stopwatch)
+               (.start minor-time-stopwatch)
+               (swap! remaining-intervals dec)
+               true)
+
+         ;; stop all
+           _ (when (= total-time (:total-time @app-state))
+               (.reset major-time-stopwatch)
+               (.start minor-time-stopwatch)
+               true)]
+     
+     (w/ConstrainedBox .constraints (w/BoxConstraints .minWidth 10 .maxWidth 600))
+     (m/Card.outlined)
+     (w/Padding .padding (p/EdgeInsets.all 25))
+     (m/Column .mainAxisAlignment m/MainAxisAlignment.center)
+     .children
+     [(m/Row
+       .children
+       [(f/widget
+         (w/Expanded .flex 1)
+         (m/Card)
+         (w/Padding .padding (p/EdgeInsets.all 4))
+         (m/Text (str "Total Seconds Remaining: "  (.toString time-remaining))))
+        (f/widget (w/Expanded .flex 1) (m/Card) (m/Text  (str  "There are  " (.toString @remaining-intervals) " intervals remaining.")))])
+      (m/Row
+       .children
+       [(f/widget (w/Expanded .flex 1) (m/Card) (m/Text (str "Seconds Elapsed: " (.toString total-time))))
+        (f/widget (w/Expanded .flex 1) (m/Card) (m/Text "Minor Interval"))])
+
+      (f/widget
+       (m/Column .mainAxisAlignment m/MainAxisAlignment.center .crossAxisAlignment m/CrossAxisAlignment.stretch)
+       .children [
+                  (f/widget
+                   (m/Column
+                    .children
+                    [
+                     (m/Row
+                      .children
+                      [(m/Text (.toStringAsFixed total-time-ratio 3) .textAlign m/TextAlign.center .style (.apply text-style .color m/Colors.red.shade200))
+                       (m/Text "   ")
+                       (m/Text (.toStringAsFixed major-time-ratio 3) .textAlign m/TextAlign.center .style (.apply text-style .color m/Colors.green.shade200))
+                       (m/Text "   ")
+                       (m/Text (.toStringAsFixed minor-time-ratio 3) .textAlign m/TextAlign.center .style (.apply text-style .color m/Colors.blue.shade200))])
+
+                     (m/Column
+                      .children
+                      [(m/LinearProgressIndicator .value total-time-ratio)
+                       (m/LinearProgressIndicator .value major-time-ratio)
+                       (m/LinearProgressIndicator .value minor-time-ratio)])
+
+                     (m/Row
+                      .children
+                      [(f/widget
+                        (w/Padding .padding (p/EdgeInsets.all 20))
+                        (m/CircularProgressIndicator .value total-time-ratio .color m/Colors.red.shade200))
+
+                       (f/widget
+                        (w/Padding .padding (p/EdgeInsets.all 20))
+                        (m/CircularProgressIndicator .value major-time-ratio .color m/Colors.green.shade200))
+
+                       (f/widget
+                        (w/Padding .padding (p/EdgeInsets.all 20))
+                        (m/CircularProgressIndicator .value minor-time-ratio .color m/Colors.blue.shade200))])
+
+                     (m/Row
+                      .children
+                      [(f/widget
+                        (m/FloatingActionButton
+                         .onPressed #(doall (map toggle-stopwatch [total-time-stopwatch major-time-stopwatch minor-time-stopwatch]))
+                         .tooltip "Timer")
+                        (m/Icon m/Icons.add))])]))])])))
+
+(defn main []
+  (f/run
+   m/MaterialApp
+   .home
+   m/Scaffold
+   .body
+   m/Center
+   (m/Column .mainAxisAlignment m/MainAxisAlignment.center)
+
+   .children
+   [;; Controls
+    (f/widget
+     (m/ConstrainedBox .constraints (m/BoxConstraints .maxWidth 600))
+     (m/Card.outlined)
+     (w/Padding .padding (p/EdgeInsets.all 25))
+     (m/Column
+      .children [(m/Text "Major Intervals (M)" .style small-text-style)
+                 (interval-selection emom-interval-major :major-interval :emom-2)
+                 (colDivider)
+                 (m/Text "Work Sub-Interval (S)" .style small-text-style)
+                 (interval-selection emom-interval-minor :minor-interval :emom-rest-2)
+                 (colDivider)
+                 (m/Text "Interval Counts" .style small-text-style)
+                 (slider-counts)]))
+    ;; activity
+    ;; put the time here
+    (timer-widgets)
+
+    (f/widget
+     :watch [state app-state]
+     (m/Column .children [(m/Text  (.toString (:major-interval @app-state)))]))]))
